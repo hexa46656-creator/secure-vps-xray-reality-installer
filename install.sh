@@ -1,0 +1,374 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# =========================================================
+# Secure VPS Xray Reality Installer
+# Ubuntu 24.04 hardening + Xray-core VLESS REALITY Vision
+# =========================================================
+
+RED="\033[31m"
+GREEN="\033[32m"
+YELLOW="\033[33m"
+BLUE="\033[34m"
+NC="\033[0m"
+
+XRAY_CONFIG="/usr/local/etc/xray/config.json"
+CLIENT_INFO="/root/xray-reality-client.txt"
+INSTALLER_STATE="/etc/xray-reality-installer.env"
+
+XRAY_PORT="${XRAY_PORT:-8443}"
+REALITY_SERVER_NAME="${REALITY_SERVER_NAME:-www.microsoft.com}"
+REALITY_DEST="${REALITY_DEST:-www.microsoft.com:443}"
+CLIENT_NAME="${CLIENT_NAME:-Ubuntu24-Xray-Reality}"
+
+log() {
+  echo -e "${GREEN}[INFO]${NC} $1"
+}
+
+warn() {
+  echo -e "${YELLOW}[WARN]${NC} $1"
+}
+
+error() {
+  echo -e "${RED}[ERROR]${NC} $1"
+  exit 1
+}
+
+require_root() {
+  if [[ "${EUID}" -ne 0 ]]; then
+    error "Please run this script as root. Example: sudo -i"
+  fi
+}
+
+check_os() {
+  if [[ ! -f /etc/os-release ]]; then
+    error "Cannot detect operating system."
+  fi
+
+  # shellcheck disable=SC1091
+  . /etc/os-release
+
+  if [[ "${ID:-}" != "ubuntu" ]]; then
+    error "This installer only supports Ubuntu. Detected: ${ID:-unknown}"
+  fi
+
+  if [[ "${VERSION_ID:-}" != "24.04" ]]; then
+    warn "This script is designed for Ubuntu 24.04. Detected: ${VERSION_ID:-unknown}"
+    read -rp "Continue anyway? [y/N]: " confirm
+    if [[ ! "${confirm}" =~ ^[Yy]$ ]]; then
+      exit 0
+    fi
+  fi
+}
+
+detect_ssh_port() {
+  SSH_PORT="$(ss -tlnp 2>/dev/null | awk '/sshd/ {print $4}' | awk -F: '{print $NF}' | head -n1 || true)"
+
+  if [[ -z "${SSH_PORT}" ]]; then
+    SSH_PORT="$(grep -Ei '^\s*Port\s+' /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null | awk '{print $NF}' | tail -n1 || true)"
+  fi
+
+  SSH_PORT="${SSH_PORT:-22}"
+  log "Detected SSH port: ${SSH_PORT}"
+}
+
+install_packages() {
+  log "Updating system and installing dependencies..."
+  apt update
+  DEBIAN_FRONTEND=noninteractive apt upgrade -y
+  DEBIAN_FRONTEND=noninteractive apt install -y \
+    curl wget unzip jq socat ufw fail2ban ca-certificates gnupg lsb-release openssl iproute2
+}
+
+backup_file() {
+  local file="$1"
+  if [[ -f "${file}" ]]; then
+    cp -a "${file}" "${file}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+}
+
+harden_ssh_safe() {
+  log "Applying safe SSH hardening..."
+
+  backup_file /etc/ssh/sshd_config
+
+  if grep -qE '^\s*#?\s*PermitRootLogin\s+' /etc/ssh/sshd_config; then
+    sed -i 's/^\s*#\?\s*PermitRootLogin\s\+.*/PermitRootLogin no/' /etc/ssh/sshd_config
+  else
+    echo "PermitRootLogin no" >> /etc/ssh/sshd_config
+  fi
+
+  if grep -qE '^\s*#?\s*PubkeyAuthentication\s+' /etc/ssh/sshd_config; then
+    sed -i 's/^\s*#\?\s*PubkeyAuthentication\s\+.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+  else
+    echo "PubkeyAuthentication yes" >> /etc/ssh/sshd_config
+  fi
+
+  # Conservative strategy:
+  # Do NOT force PasswordAuthentication no by default.
+  # This prevents beginners from locking themselves out before SSH key login is confirmed.
+  if ! grep -qE '^\s*PasswordAuthentication\s+' /etc/ssh/sshd_config; then
+    echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config
+  fi
+
+  sshd -t || error "SSH config test failed. Check /etc/ssh/sshd_config"
+  systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
+
+  log "SSH hardening completed: root login disabled, public key auth enabled."
+}
+
+configure_ufw() {
+  log "Configuring UFW firewall..."
+
+  ufw --force reset
+  ufw default deny incoming
+  ufw default allow outgoing
+
+  ufw allow "${SSH_PORT}/tcp" comment "SSH"
+  ufw allow "${XRAY_PORT}/tcp" comment "Xray Reality"
+
+  # Useful for future web deployment / certificate issuance.
+  ufw allow 80/tcp comment "HTTP"
+  ufw allow 443/tcp comment "HTTPS"
+
+  ufw --force enable
+  ufw status verbose
+}
+
+configure_fail2ban() {
+  log "Configuring Fail2ban for sshd..."
+
+  mkdir -p /etc/fail2ban/jail.d
+
+  cat > /etc/fail2ban/jail.d/sshd.local <<EOF
+[sshd]
+enabled = true
+port = ${SSH_PORT}
+filter = sshd
+backend = systemd
+maxretry = 5
+findtime = 10m
+bantime = 1h
+EOF
+
+  systemctl enable fail2ban
+  systemctl restart fail2ban
+  fail2ban-client status sshd || true
+}
+
+install_xray() {
+  log "Installing or updating Xray-core..."
+
+  bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+
+  if ! command -v xray >/dev/null 2>&1; then
+    error "Xray command not found after installation."
+  fi
+
+  log "Installed Xray version:"
+  xray version | head -n1
+}
+
+generate_values() {
+  log "Generating UUID, REALITY key pair, and shortId..."
+
+  UUID="$(xray uuid)"
+  KEY_PAIR="$(xray x25519)"
+  PRIVATE_KEY="$(echo "${KEY_PAIR}" | awk '/Private key:/ {print $3}')"
+  PUBLIC_KEY="$(echo "${KEY_PAIR}" | awk '/Public key:/ {print $3}')"
+  SHORT_ID="$(openssl rand -hex 8)"
+  SERVER_IP="$(curl -4 -s --max-time 10 https://api.ipify.org || true)"
+
+  if [[ -z "${SERVER_IP}" ]]; then
+    SERVER_IP="$(hostname -I | awk '{print $1}')"
+  fi
+
+  if [[ -z "${UUID}" || -z "${PRIVATE_KEY}" || -z "${PUBLIC_KEY}" || -z "${SHORT_ID}" || -z "${SERVER_IP}" ]]; then
+    error "Failed to generate required values."
+  fi
+}
+
+write_xray_config() {
+  log "Writing Xray config: ${XRAY_CONFIG}"
+
+  mkdir -p /usr/local/etc/xray
+  backup_file "${XRAY_CONFIG}"
+
+  cat > "${XRAY_CONFIG}" <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "vless-reality-vision",
+      "listen": "0.0.0.0",
+      "port": ${XRAY_PORT},
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${UUID}",
+            "flow": "xtls-rprx-vision",
+            "email": "default@xray"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "${REALITY_DEST}",
+          "xver": 0,
+          "serverNames": [
+            "${REALITY_SERVER_NAME}"
+          ],
+          "privateKey": "${PRIVATE_KEY}",
+          "shortIds": [
+            "${SHORT_ID}"
+          ]
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "direct",
+      "protocol": "freedom"
+    },
+    {
+      "tag": "blocked",
+      "protocol": "blackhole"
+    }
+  ]
+}
+EOF
+
+  xray run -test -config "${XRAY_CONFIG}" || error "Xray config test failed."
+}
+
+save_state() {
+  log "Saving installer state: ${INSTALLER_STATE}"
+
+  cat > "${INSTALLER_STATE}" <<EOF
+XRAY_PORT="${XRAY_PORT}"
+REALITY_SERVER_NAME="${REALITY_SERVER_NAME}"
+REALITY_DEST="${REALITY_DEST}"
+CLIENT_NAME="${CLIENT_NAME}"
+SSH_PORT="${SSH_PORT}"
+SERVER_IP="${SERVER_IP}"
+EOF
+
+  chmod 600 "${INSTALLER_STATE}"
+}
+
+write_client_info() {
+  log "Writing client info: ${CLIENT_INFO}"
+
+  local encoded_name
+  encoded_name="$(echo "${CLIENT_NAME}" | sed 's/ /%20/g')"
+
+  VLESS_LINK="vless://${UUID}@${SERVER_IP}:${XRAY_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_SERVER_NAME}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp&headerType=none#${encoded_name}"
+
+  cat > "${CLIENT_INFO}" <<EOF
+============================================================
+Xray-core VLESS + REALITY + Vision Client Info
+============================================================
+
+Server IP:
+${SERVER_IP}
+
+Port:
+${XRAY_PORT}
+
+UUID:
+${UUID}
+
+Flow:
+xtls-rprx-vision
+
+Network:
+tcp
+
+Security:
+reality
+
+SNI / Server Name:
+${REALITY_SERVER_NAME}
+
+REALITY Public Key:
+${PUBLIC_KEY}
+
+Short ID:
+${SHORT_ID}
+
+Fingerprint:
+chrome
+
+VLESS Link:
+${VLESS_LINK}
+
+Config file:
+${XRAY_CONFIG}
+
+Useful commands:
+systemctl status xray
+journalctl -u xray -e --no-pager
+ufw status verbose
+fail2ban-client status sshd
+xray version
+
+============================================================
+EOF
+
+  chmod 600 "${CLIENT_INFO}"
+
+  echo
+  echo -e "${BLUE}================= CLIENT INFO =================${NC}"
+  cat "${CLIENT_INFO}"
+  echo -e "${BLUE}================================================${NC}"
+}
+
+start_services() {
+  log "Starting Xray service..."
+
+  systemctl enable xray
+  systemctl restart xray
+
+  if systemctl is-active --quiet xray; then
+    log "Xray is running."
+  else
+    journalctl -u xray -e --no-pager || true
+    error "Xray failed to start."
+  fi
+}
+
+main() {
+  require_root
+  check_os
+  detect_ssh_port
+  install_packages
+  harden_ssh_safe
+  configure_ufw
+  configure_fail2ban
+  install_xray
+  generate_values
+  write_xray_config
+  save_state
+  start_services
+  write_client_info
+
+  log "Deployment completed successfully."
+}
+
+main "$@"
