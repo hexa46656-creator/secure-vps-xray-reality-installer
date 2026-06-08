@@ -2,6 +2,8 @@
 
 Automated Ubuntu 24.04 VPS hardening and Xray-core VLESS + REALITY + Vision deployment script.
 
+适用于 Ubuntu 24.04 VPS 的安全加固与 Xray-core VLESS + Reality + Vision 自动部署脚本。
+
 ## Features
 
 - Ubuntu 24.04 VPS security hardening
@@ -22,39 +24,85 @@ Automated Ubuntu 24.04 VPS hardening and Xray-core VLESS + REALITY + Vision depl
 
 ## Quick Start
 
-sudo -i 
-apt update && apt install -y curl 
-bash <(curl -Ls https://raw.githubusercontent.com/YOUR_USERNAME/secure-vps-xray-reality-installer/main/install.sh) 
+```bash
+sudo -i
+apt update && apt install -y curl
+bash <(curl -Ls https://raw.githubusercontent.com/hexa46656-creator/secure-vps-xray-reality-installer/main/install.sh)
+```
 
 ## Custom Port
 
-Default Xray inbound port is 8443.
+Default Xray inbound port is `8443`.
 
-You can customize it:
-
-XRAY_PORT=443 bash <(curl -Ls https://raw.githubusercontent.com/YOUR_USERNAME/secure-vps-xray-reality-installer/main/install.sh) 
+```bash
+XRAY_PORT=8443 bash <(curl -Ls https://raw.githubusercontent.com/hexa46656-creator/secure-vps-xray-reality-installer/main/install.sh)
+```
 
 ## Custom REALITY SNI
 
-Default SNI is www.microsoft.com.
+Default SNI is `www.microsoft.com`.
 
-You can customize it:
-
-REALITY_SERVER_NAME=www.apple.com REALITY_DEST=www.apple.com:443 bash <(curl -Ls https://raw.githubusercontent.com/YOUR_USERNAME/secure-vps-xray-reality-installer/main/install.sh) 
+```bash
+REALITY_SERVER_NAME=www.apple.com REALITY_DEST=www.apple.com:443 bash <(curl -Ls https://raw.githubusercontent.com/hexa46656-creator/secure-vps-xray-reality-installer/main/install.sh)
+```
 
 ## Client Info
 
 After installation, client information is saved at:
 
-bash /root/xray-reality-client.txt 
+```bash
+/root/xray-reality-client.txt
+```
 
 View it:
 
-cat /root/xray-reality-client.txt 
+```bash
+cat /root/xray-reality-client.txt
+```
 
 ## Useful Commands
 
-systemctl status xray journalctl -u xray -e --no-pager ufw status verbose fail2ban-client status sshd xray version 
+```bash
+systemctl status xray
+journalctl -u xray -e --no-pager
+ufw status verbose
+fail2ban-client status sshd
+xray version
+```
+
+## Project Structure
+
+```text
+secure-vps-xray-reality-installer/
+├── README.md
+├── LICENSE
+├── .gitignore
+├── install.sh
+├── uninstall.sh
+├── update.sh
+├── status.sh
+├── reset-client.sh
+└── docs/
+    ├── shadowrocket.md
+    └── troubleshooting.md
+```
+
+## Installation Output
+
+After successful installation, the script will generate:
+
+- Server IP
+- Port
+- UUID
+- REALITY public key
+- REALITY shortId
+- VLESS import link
+
+The client information will be saved to:
+
+```bash
+/root/xray-reality-client.txt
+```
 
 ## Security Notes
 
@@ -65,6 +113,44 @@ This script uses a conservative SSH hardening strategy:
 - Password authentication is not forcibly disabled by default to avoid locking new users out.
 
 After confirming your SSH key login works, you may manually disable SSH password login.
+
+## Common Commands
+
+Check Xray:
+
+```bash
+systemctl status xray
+```
+
+View Xray logs:
+
+```bash
+journalctl -u xray -e --no-pager
+```
+
+Check firewall:
+
+```bash
+ufw status verbose
+```
+
+Check Fail2ban:
+
+```bash
+fail2ban-client status sshd
+```
+
+## Update
+
+```bash
+bash update.sh
+```
+
+## Uninstall
+
+```bash
+bash uninstall.sh
+```
 
 ## License
 
