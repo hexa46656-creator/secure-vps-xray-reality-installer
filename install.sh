@@ -15,11 +15,15 @@ NC="\033[0m"
 XRAY_CONFIG="/usr/local/etc/xray/config.json"
 CLIENT_INFO="/root/xray-reality-client.txt"
 INSTALLER_STATE="/etc/xray-reality-installer.env"
+SHADOWROCKET_CONF_SRC="default.conf"
+SHADOWROCKET_CONF_DST="/root/shadowrocket-default.conf"
 
 XRAY_PORT="${XRAY_PORT:-8443}"
 REALITY_SERVER_NAME="${REALITY_SERVER_NAME:-www.microsoft.com}"
 REALITY_DEST="${REALITY_DEST:-www.microsoft.com:443}"
-CLIENT_NAME="${CLIENT_NAME:-Ubuntu24-Xray-Reality}"
+CLIENT_NAME="${CLIENT_NAME:-Xray-Reality}"
+DEPLOY_USER="${DEPLOY_USER:-vpn}"
+DEPLOY_USER_PASSWORD="${DEPLOY_USER_PASSWORD:-}"
 
 log() {
   echo -e "${GREEN}[INFO]${NC} $1"
@@ -77,7 +81,7 @@ install_packages() {
   apt update
   DEBIAN_FRONTEND=noninteractive apt upgrade -y
   DEBIAN_FRONTEND=noninteractive apt install -y \
-    curl wget unzip jq socat ufw fail2ban ca-certificates gnupg lsb-release openssl iproute2
+    curl wget unzip jq socat ufw fail2ban ca-certificates gnupg lsb-release openssl iproute2 sudo
 }
 
 backup_file() {
@@ -85,6 +89,39 @@ backup_file() {
   if [[ -f "${file}" ]]; then
     cp -a "${file}" "${file}.bak.$(date +%Y%m%d%H%M%S)"
   fi
+}
+
+create_deploy_user() {
+  log "Creating or updating deploy user: ${DEPLOY_USER}"
+
+  if [[ ! "${DEPLOY_USER}" =~ ^[a-z_][a-z0-9_-]*[$]?$ ]]; then
+    error "Invalid DEPLOY_USER: ${DEPLOY_USER}"
+  fi
+
+  if ! id "${DEPLOY_USER}" >/dev/null 2>&1; then
+    adduser --disabled-password --gecos "" "${DEPLOY_USER}"
+  fi
+
+  usermod -aG sudo "${DEPLOY_USER}"
+
+  if [[ -z "${DEPLOY_USER_PASSWORD}" ]]; then
+    DEPLOY_USER_PASSWORD="$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-20)"
+  fi
+
+  echo "${DEPLOY_USER}:${DEPLOY_USER_PASSWORD}" | chpasswd
+
+  mkdir -p "/home/${DEPLOY_USER}/.ssh"
+  chmod 700 "/home/${DEPLOY_USER}/.ssh"
+
+  if [[ -f /root/.ssh/authorized_keys && ! -s "/home/${DEPLOY_USER}/.ssh/authorized_keys" ]]; then
+    cp /root/.ssh/authorized_keys "/home/${DEPLOY_USER}/.ssh/authorized_keys"
+    chmod 600 "/home/${DEPLOY_USER}/.ssh/authorized_keys"
+  fi
+
+  chown -R "${DEPLOY_USER}:${DEPLOY_USER}" "/home/${DEPLOY_USER}/.ssh"
+
+  log "Deploy user is ready: ${DEPLOY_USER}"
+  warn "Save this SSH login password now. It will also be saved in ${CLIENT_INFO} with root-only permission."
 }
 
 harden_ssh_safe() {
@@ -105,16 +142,18 @@ harden_ssh_safe() {
   fi
 
   # Conservative strategy:
-  # Do NOT force PasswordAuthentication no by default.
-  # This prevents beginners from locking themselves out before SSH key login is confirmed.
-  if ! grep -qE '^\s*PasswordAuthentication\s+' /etc/ssh/sshd_config; then
+  # Keep password login enabled by default because this installer creates a new deploy user.
+  # Users can disable password login after confirming SSH key login works.
+  if grep -qE '^\s*#?\s*PasswordAuthentication\s+' /etc/ssh/sshd_config; then
+    sed -i 's/^\s*#\?\s*PasswordAuthentication\s\+.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+  else
     echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config
   fi
 
   sshd -t || error "SSH config test failed. Check /etc/ssh/sshd_config"
   systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
 
-  log "SSH hardening completed: root login disabled, public key auth enabled."
+  log "SSH hardening completed: root login disabled, public key auth enabled, password login kept enabled."
 }
 
 configure_ufw() {
@@ -295,6 +334,18 @@ EOF
   xray run -test -config "${XRAY_CONFIG}" || error "Xray config test failed."
 }
 
+install_shadowrocket_config() {
+  log "Preparing Shadowrocket local config..."
+
+  if [[ -f "${SHADOWROCKET_CONF_SRC}" ]]; then
+    cp "${SHADOWROCKET_CONF_SRC}" "${SHADOWROCKET_CONF_DST}"
+    chmod 600 "${SHADOWROCKET_CONF_DST}"
+    log "Shadowrocket config copied to ${SHADOWROCKET_CONF_DST}"
+  else
+    warn "${SHADOWROCKET_CONF_SRC} not found in installer directory. Skipping Shadowrocket local config copy."
+  fi
+}
+
 save_state() {
   log "Saving installer state: ${INSTALLER_STATE}"
 
@@ -303,8 +354,10 @@ XRAY_PORT="${XRAY_PORT}"
 REALITY_SERVER_NAME="${REALITY_SERVER_NAME}"
 REALITY_DEST="${REALITY_DEST}"
 CLIENT_NAME="${CLIENT_NAME}"
+DEPLOY_USER="${DEPLOY_USER}"
 SSH_PORT="${SSH_PORT}"
 SERVER_IP="${SERVER_IP}"
+SHADOWROCKET_CONF_DST="${SHADOWROCKET_CONF_DST}"
 EOF
 
   chmod 600 "${INSTALLER_STATE}"
@@ -322,6 +375,20 @@ write_client_info() {
 ============================================================
 Xray-core VLESS + REALITY + Vision Client Info
 ============================================================
+
+SSH Login User:
+${DEPLOY_USER}
+
+SSH Login Password:
+${DEPLOY_USER_PASSWORD}
+
+SSH Login Command:
+ssh ${DEPLOY_USER}@${SERVER_IP}
+
+Important:
+Root SSH login has been disabled for safety.
+Use the SSH login user above for future server management.
+Save this password immediately.
 
 Server IP:
 ${SERVER_IP}
@@ -355,6 +422,12 @@ chrome
 
 VLESS Link:
 ${VLESS_LINK}
+
+Shadowrocket Local Config:
+${SHADOWROCKET_CONF_DST}
+
+GitHub default.conf Raw URL:
+https://raw.githubusercontent.com/hexa46656-creator/secure-vps-xray-reality-installer/main/default.conf
 
 Config file:
 ${XRAY_CONFIG}
@@ -396,12 +469,14 @@ main() {
   check_os
   detect_ssh_port
   install_packages
+  create_deploy_user
   harden_ssh_safe
   configure_ufw
   configure_fail2ban
   install_xray
   generate_values
   write_xray_config
+  install_shadowrocket_config
   save_state
   start_services
   write_client_info
