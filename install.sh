@@ -172,11 +172,41 @@ install_xray() {
 generate_values() {
   log "Generating UUID, REALITY key pair, and shortId..."
 
-  UUID="$(xray uuid)"
-  KEY_PAIR="$(xray x25519)"
-  PRIVATE_KEY="$(echo "${KEY_PAIR}" | awk '/Private key:/ {print $3}')"
-  PUBLIC_KEY="$(echo "${KEY_PAIR}" | awk '/Public key:/ {print $3}')"
-  SHORT_ID="$(openssl rand -hex 8)"
+  local xray_bin
+  xray_bin="$(command -v xray || true)"
+
+  if [[ -z "${xray_bin}" && -x /usr/local/bin/xray ]]; then
+    xray_bin="/usr/local/bin/xray"
+  fi
+
+  if [[ -z "${xray_bin}" ]]; then
+    error "Xray binary not found."
+  fi
+
+  UUID="$(${xray_bin} uuid 2>/dev/null || true)"
+  KEY_PAIR="$(${xray_bin} x25519 2>/dev/null || true)"
+
+  # Xray output format changed in newer versions.
+  # Old examples may use:
+  #   Private key: xxx
+  #   Public key: xxx
+  # Xray 26.x may output:
+  #   PrivateKey: xxx
+  #   Password (PublicKey): xxx
+  PRIVATE_KEY="$(echo "${KEY_PAIR}" | awk -F': ' '
+    /^PrivateKey:/ {print $2}
+    /^Private key:/ {print $2}
+    /^Private Key:/ {print $2}
+  ' | head -n1)"
+
+  PUBLIC_KEY="$(echo "${KEY_PAIR}" | awk -F': ' '
+    /^Password \(PublicKey\):/ {print $2}
+    /^PublicKey:/ {print $2}
+    /^Public key:/ {print $2}
+    /^Public Key:/ {print $2}
+  ' | head -n1)"
+
+  SHORT_ID="$(openssl rand -hex 8 2>/dev/null || true)"
   SERVER_IP="$(curl -4 -s --max-time 10 https://api.ipify.org || true)"
 
   if [[ -z "${SERVER_IP}" ]]; then
@@ -184,7 +214,15 @@ generate_values() {
   fi
 
   if [[ -z "${UUID}" || -z "${PRIVATE_KEY}" || -z "${PUBLIC_KEY}" || -z "${SHORT_ID}" || -z "${SERVER_IP}" ]]; then
-    error "Failed to generate required values."
+    echo -e "${RED}[ERROR]${NC} Failed to generate required values."
+    echo "UUID=${UUID}"
+    echo "PRIVATE_KEY=${PRIVATE_KEY}"
+    echo "PUBLIC_KEY=${PUBLIC_KEY}"
+    echo "SHORT_ID=${SHORT_ID}"
+    echo "SERVER_IP=${SERVER_IP}"
+    echo "xray x25519 output:"
+    echo "${KEY_PAIR}"
+    exit 1
   fi
 }
 
