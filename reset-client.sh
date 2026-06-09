@@ -10,6 +10,7 @@ NC="\033[0m"
 XRAY_CONFIG="/usr/local/etc/xray/config.json"
 CLIENT_INFO="/root/xray-reality-client.txt"
 INSTALLER_STATE="/etc/xray-reality-installer.env"
+SHADOWROCKET_CONF_DST="/root/shadowrocket-default.conf"
 
 log() {
   echo -e "${GREEN}[INFO]${NC} $1"
@@ -45,18 +46,35 @@ load_state() {
   XRAY_PORT="${XRAY_PORT:-8443}"
   REALITY_SERVER_NAME="${REALITY_SERVER_NAME:-www.microsoft.com}"
   REALITY_DEST="${REALITY_DEST:-www.microsoft.com:443}"
-  CLIENT_NAME="${CLIENT_NAME:-Ubuntu24-Xray-Reality}"
+  CLIENT_NAME="${CLIENT_NAME:-Xray-Reality}"
+  DEPLOY_USER="${DEPLOY_USER:-vpn}"
   SERVER_IP="${SERVER_IP:-}"
+  SHADOWROCKET_CONF_DST="${SHADOWROCKET_CONF_DST:-/root/shadowrocket-default.conf}"
 }
 
 generate_values() {
   log "Generating new UUID, REALITY key pair, and shortId..."
 
-  UUID="$(xray uuid)"
-  KEY_PAIR="$(xray x25519)"
-  PRIVATE_KEY="$(echo "${KEY_PAIR}" | awk '/Private key:/ {print $3}')"
-  PUBLIC_KEY="$(echo "${KEY_PAIR}" | awk '/Public key:/ {print $3}')"
-  SHORT_ID="$(openssl rand -hex 8)"
+  UUID="$(xray uuid 2>/dev/null || true)"
+  KEY_PAIR="$(xray x25519 2>/dev/null || true)"
+
+  # Compatible with both older and newer Xray x25519 output formats.
+  # Older examples may output: Private key / Public key.
+  # Xray 26.x may output: PrivateKey / Password (PublicKey).
+  PRIVATE_KEY="$(echo "${KEY_PAIR}" | awk -F': ' '
+    /^PrivateKey:/ {print $2}
+    /^Private key:/ {print $2}
+    /^Private Key:/ {print $2}
+  ' | head -n1)"
+
+  PUBLIC_KEY="$(echo "${KEY_PAIR}" | awk -F': ' '
+    /^Password \(PublicKey\):/ {print $2}
+    /^PublicKey:/ {print $2}
+    /^Public key:/ {print $2}
+    /^Public Key:/ {print $2}
+  ' | head -n1)"
+
+  SHORT_ID="$(openssl rand -hex 8 2>/dev/null || true)"
 
   if [[ -z "${SERVER_IP}" ]]; then
     SERVER_IP="$(curl -4 -s --max-time 10 https://api.ipify.org || true)"
@@ -67,7 +85,15 @@ generate_values() {
   fi
 
   if [[ -z "${UUID}" || -z "${PRIVATE_KEY}" || -z "${PUBLIC_KEY}" || -z "${SHORT_ID}" || -z "${SERVER_IP}" ]]; then
-    error "Failed to generate required values."
+    echo -e "${RED}[ERROR]${NC} Failed to generate required values."
+    echo "UUID=${UUID}"
+    echo "PRIVATE_KEY=${PRIVATE_KEY}"
+    echo "PUBLIC_KEY=${PUBLIC_KEY}"
+    echo "SHORT_ID=${SHORT_ID}"
+    echo "SERVER_IP=${SERVER_IP}"
+    echo "xray x25519 output:"
+    echo "${KEY_PAIR}"
+    exit 1
   fi
 }
 
@@ -106,7 +132,9 @@ XRAY_PORT="${XRAY_PORT}"
 REALITY_SERVER_NAME="${REALITY_SERVER_NAME}"
 REALITY_DEST="${REALITY_DEST}"
 CLIENT_NAME="${CLIENT_NAME}"
+DEPLOY_USER="${DEPLOY_USER}"
 SERVER_IP="${SERVER_IP}"
+SHADOWROCKET_CONF_DST="${SHADOWROCKET_CONF_DST}"
 EOF
 
   chmod 600 "${INSTALLER_STATE}"
@@ -122,6 +150,12 @@ write_client_info() {
 ============================================================
 Xray-core VLESS + REALITY + Vision Client Info
 ============================================================
+
+SSH Login User:
+${DEPLOY_USER}
+
+SSH Login Command:
+ssh ${DEPLOY_USER}@${SERVER_IP}
 
 Server IP:
 ${SERVER_IP}
@@ -155,6 +189,12 @@ chrome
 
 VLESS Link:
 ${VLESS_LINK}
+
+Shadowrocket Local Config:
+${SHADOWROCKET_CONF_DST}
+
+GitHub default.conf Raw URL:
+https://raw.githubusercontent.com/hexa46656-creator/secure-vps-xray-reality-installer/main/default.conf
 
 Config file:
 ${XRAY_CONFIG}
