@@ -231,16 +231,50 @@ EOF
 }
 
 install_xray() {
-  log "Installing or updating Xray-core..."
+  local tmp_installer=""
+  local installer_url="https://github.com/XTLS/Xray-install/raw/main/install-release.sh"
 
-  bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
-
-  if ! command -v xray >/dev/null 2>&1; then
-    error "Xray command not found after installation."
+  if [[ -x /usr/local/bin/xray ]]; then
+    log "Xray already installed. Reusing existing binary."
+    log "Xray binary is ready. Continuing Reality configuration..."
+    log "Installed Xray version:"
+    /usr/local/bin/xray version | head -n1
+    return
   fi
 
+  log "Installing Xray-core with official installer..."
+
+  tmp_installer="$(mktemp)"
+
+  if ! curl -fsSL -o "${tmp_installer}" "${installer_url}"; then
+    rm -f "${tmp_installer}"
+    if [[ -x /usr/local/bin/xray ]]; then
+      warn "Failed to download official installer, but /usr/local/bin/xray exists. Reusing existing binary."
+    else
+      error "Failed to download official Xray installer and /usr/local/bin/xray does not exist."
+    fi
+  elif ! bash "${tmp_installer}" install; then
+    rm -f "${tmp_installer}"
+    if [[ -x /usr/local/bin/xray ]]; then
+      warn "Official installer failed, but /usr/local/bin/xray exists. Reusing existing binary."
+    else
+      error "Official Xray installer failed and /usr/local/bin/xray does not exist."
+    fi
+  else
+    rm -f "${tmp_installer}"
+  fi
+
+  if [[ ! -x /usr/local/bin/xray ]] && ! command -v xray >/dev/null 2>&1; then
+    error "Xray command not found after install/reuse step."
+  fi
+
+  log "Xray binary is ready. Continuing Reality configuration..."
   log "Installed Xray version:"
-  xray version | head -n1
+  if [[ -x /usr/local/bin/xray ]]; then
+    /usr/local/bin/xray version | head -n1
+  else
+    xray version | head -n1
+  fi
 }
 
 generate_values() {
