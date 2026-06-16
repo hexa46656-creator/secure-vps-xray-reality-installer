@@ -17,12 +17,13 @@ CLIENT_INFO="/root/xray-reality-client.txt"
 INSTALLER_STATE="/etc/xray-reality-installer.env"
 SHADOWROCKET_CONF_SRC="default.conf"
 SHADOWROCKET_CONF_DST="/root/shadowrocket-default.conf"
+SSHD_DROPIN="/etc/ssh/sshd_config.d/99-xray-reality-vpsguard.conf"
 
 XRAY_PORT="${XRAY_PORT:-8443}"
 REALITY_SERVER_NAME="${REALITY_SERVER_NAME:-www.microsoft.com}"
 REALITY_DEST="${REALITY_DEST:-www.microsoft.com:443}"
-CLIENT_NAME="${CLIENT_NAME:-Xray-Reality}"
-DEPLOY_USER="${DEPLOY_USER:-vpn}"
+CLIENT_NAME="${CLIENT_NAME:-VLESS-Reality}"
+DEPLOY_USER="${DEPLOY_USER:-alex}"
 DEPLOY_USER_PASSWORD="${DEPLOY_USER_PASSWORD:-}"
 
 log() {
@@ -92,68 +93,105 @@ backup_file() {
 }
 
 create_deploy_user() {
-  log "Creating or updating deploy user: ${DEPLOY_USER}"
+  log "Preparing deploy user: ${DEPLOY_USER}"
 
   if [[ ! "${DEPLOY_USER}" =~ ^[a-z_][a-z0-9_-]*[$]?$ ]]; then
     error "Invalid DEPLOY_USER: ${DEPLOY_USER}"
   fi
 
   if ! id "${DEPLOY_USER}" >/dev/null 2>&1; then
+    log "User ${DEPLOY_USER} does not exist. Creating it without password login."
     adduser --disabled-password --gecos "" "${DEPLOY_USER}"
+  else
+    log "User ${DEPLOY_USER} already exists. Reusing it."
   fi
 
   usermod -aG sudo "${DEPLOY_USER}"
 
-  if [[ -z "${DEPLOY_USER_PASSWORD}" ]]; then
-    DEPLOY_USER_PASSWORD="$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-20)"
+  if [[ -n "${DEPLOY_USER_PASSWORD}" ]]; then
+    echo "${DEPLOY_USER}:${DEPLOY_USER_PASSWORD}" | chpasswd
+    warn "A password was set for ${DEPLOY_USER}, but SSH password login remains disabled by default."
   fi
-
-  echo "${DEPLOY_USER}:${DEPLOY_USER_PASSWORD}" | chpasswd
 
   mkdir -p "/home/${DEPLOY_USER}/.ssh"
   chmod 700 "/home/${DEPLOY_USER}/.ssh"
 
-  if [[ -f /root/.ssh/authorized_keys && ! -s "/home/${DEPLOY_USER}/.ssh/authorized_keys" ]]; then
+  if [[ -f /root/.ssh/authorized_keys && ! -e "/home/${DEPLOY_USER}/.ssh/authorized_keys" ]]; then
     cp /root/.ssh/authorized_keys "/home/${DEPLOY_USER}/.ssh/authorized_keys"
     chmod 600 "/home/${DEPLOY_USER}/.ssh/authorized_keys"
+    log "Copied root authorized_keys to /home/${DEPLOY_USER}/.ssh/authorized_keys."
+  elif [[ -e "/home/${DEPLOY_USER}/.ssh/authorized_keys" ]]; then
+    log "Keeping existing /home/${DEPLOY_USER}/.ssh/authorized_keys unchanged."
+  else
+    warn "No SSH key was copied for ${DEPLOY_USER}. Confirm key access before closing this session."
   fi
 
   chown -R "${DEPLOY_USER}:${DEPLOY_USER}" "/home/${DEPLOY_USER}/.ssh"
 
   log "Deploy user is ready: ${DEPLOY_USER}"
-  warn "Save this SSH login password now. It will also be saved in ${CLIENT_INFO} with root-only permission."
 }
 
 harden_ssh_safe() {
-  log "Applying safe SSH hardening..."
+  log "Applying VPSGuard-compatible SSH hardening..."
 
   backup_file /etc/ssh/sshd_config
+  backup_file "${SSHD_DROPIN}"
 
-  if grep -qE '^\s*#?\s*PermitRootLogin\s+' /etc/ssh/sshd_config; then
-    sed -i 's/^\s*#\?\s*PermitRootLogin\s\+.*/PermitRootLogin no/' /etc/ssh/sshd_config
-  else
-    echo "PermitRootLogin no" >> /etc/ssh/sshd_config
-  fi
+  mkdir -p /etc/ssh/sshd_config.d
 
-  if grep -qE '^\s*#?\s*PubkeyAuthentication\s+' /etc/ssh/sshd_config; then
-    sed -i 's/^\s*#\?\s*PubkeyAuthentication\s\+.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
-  else
-    echo "PubkeyAuthentication yes" >> /etc/ssh/sshd_config
-  fi
-
-  # Conservative strategy:
-  # Keep password login enabled by default because this installer creates a new deploy user.
-  # Users can disable password login after confirming SSH key login works.
-  if grep -qE '^\s*#?\s*PasswordAuthentication\s+' /etc/ssh/sshd_config; then
-    sed -i 's/^\s*#\?\s*PasswordAuthentication\s\+.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-  else
-    echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config
-  fi
+  cat > "${SSHD_DROPIN}" <<EOF
+# Managed by secure-vps-xray-reality-installer.
+# Compatible with VPSGuard-style SSH hardening.
+PermitRootLogin no
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+EOF
 
   sshd -t || error "SSH config test failed. Check /etc/ssh/sshd_config"
-  systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
+  verify_effective_ssh_config
 
-  log "SSH hardening completed: root login disabled, public key auth enabled, password login kept enabled."
+  reload_ssh_service
+  verify_ssh_listening
+
+  log "SSH hardening completed: root login disabled, public key auth enabled, password and keyboard-interactive auth disabled."
+}
+
+verify_effective_ssh_config() {
+  local effective_config
+  effective_config="$(sshd -T)"
+
+  echo "${effective_config}" | grep -qi '^permitrootlogin no$' || error "Effective SSH config must keep PermitRootLogin no."
+  echo "${effective_config}" | grep -qi '^pubkeyauthentication yes$' || error "Effective SSH config must keep PubkeyAuthentication yes."
+  echo "${effective_config}" | grep -qi '^passwordauthentication no$' || error "Effective SSH config must keep PasswordAuthentication no."
+  echo "${effective_config}" | grep -qi '^kbdinteractiveauthentication no$' || error "Effective SSH config must keep KbdInteractiveAuthentication no."
+}
+
+reload_ssh_service() {
+  if systemctl is-active --quiet ssh.service; then
+    systemctl reload ssh.service 2>/dev/null || systemctl restart ssh.service
+  elif systemctl is-active --quiet ssh.socket; then
+    systemctl start ssh.service 2>/dev/null || systemctl restart ssh.service
+  else
+    systemctl reload ssh 2>/dev/null || systemctl restart ssh 2>/dev/null || systemctl restart sshd
+  fi
+}
+
+verify_ssh_listening() {
+  local ssh_active="no"
+  local ssh_listening="no"
+
+  if systemctl is-active --quiet ssh.service; then
+    ssh_active="yes"
+  fi
+
+  if ss -tulpn 2>/dev/null | awk -v port="${SSH_PORT}" '{split($5, local_addr, ":")} local_addr[length(local_addr)] == port {found=1} END {exit found ? 0 : 1}'; then
+    ssh_listening="yes"
+  fi
+
+  if [[ "${ssh_active}" != "yes" && "${ssh_listening}" != "yes" ]]; then
+    error "SSH service is not active and port ${SSH_PORT}/tcp is not listening after SSH reload."
+  fi
 }
 
 configure_ufw() {
@@ -165,10 +203,6 @@ configure_ufw() {
 
   ufw allow "${SSH_PORT}/tcp" comment "SSH"
   ufw allow "${XRAY_PORT}/tcp" comment "Xray Reality"
-
-  # Useful for future web deployment / certificate issuance.
-  ufw allow 80/tcp comment "HTTP"
-  ufw allow 443/tcp comment "HTTPS"
 
   ufw --force enable
   ufw status verbose
@@ -190,9 +224,10 @@ findtime = 10m
 bantime = 1h
 EOF
 
-  systemctl enable fail2ban
-  systemctl restart fail2ban
-  fail2ban-client status sshd || true
+  systemctl enable fail2ban || warn "Failed to enable fail2ban. Xray installation will continue."
+  systemctl restart fail2ban || warn "Failed to restart fail2ban. Xray installation will continue."
+  sleep 3
+  fail2ban-client status sshd || warn "Fail2ban sshd jail is not ready. Xray installation will continue."
 }
 
 install_xray() {
@@ -331,6 +366,10 @@ write_xray_config() {
 }
 EOF
 
+  if [[ "$(tr -d '[:space:]' < "${XRAY_CONFIG}")" == "{}" ]]; then
+    error "Refusing to continue because ${XRAY_CONFIG} is empty JSON."
+  fi
+
   xray run -test -config "${XRAY_CONFIG}" || error "Xray config test failed."
 }
 
@@ -367,9 +406,9 @@ write_client_info() {
   log "Writing client info: ${CLIENT_INFO}"
 
   local encoded_name
-  encoded_name="$(echo "${CLIENT_NAME}" | sed 's/ /%20/g')"
+  encoded_name="$(echo "${CLIENT_NAME}-${SERVER_IP}" | sed 's/ /%20/g')"
 
-  VLESS_LINK="vless://${UUID}@${SERVER_IP}:${XRAY_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_SERVER_NAME}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp&headerType=none#${encoded_name}"
+  VLESS_LINK="vless://${UUID}@${SERVER_IP}:${XRAY_PORT}?encryption=none&security=reality&sni=${REALITY_SERVER_NAME}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp&flow=xtls-rprx-vision#${encoded_name}"
 
   cat > "${CLIENT_INFO}" <<EOF
 ============================================================
@@ -379,16 +418,12 @@ Xray-core VLESS + REALITY + Vision Client Info
 SSH Login User:
 ${DEPLOY_USER}
 
-SSH Login Password:
-${DEPLOY_USER_PASSWORD}
-
 SSH Login Command:
 ssh ${DEPLOY_USER}@${SERVER_IP}
 
 Important:
-Root SSH login has been disabled for safety.
-Use the SSH login user above for future server management.
-Save this password immediately.
+Root SSH login and SSH password login are disabled for safety.
+Use the SSH login user above with your existing SSH key for future server management.
 
 Server IP:
 ${SERVER_IP}
@@ -408,10 +443,13 @@ tcp
 Security:
 reality
 
+SNI / serverName:
+${REALITY_SERVER_NAME}
+
 SNI / Server Name:
 ${REALITY_SERVER_NAME}
 
-REALITY Public Key:
+Public Key:
 ${PUBLIC_KEY}
 
 Short ID:
@@ -420,7 +458,7 @@ ${SHORT_ID}
 Fingerprint:
 chrome
 
-VLESS Link:
+VLESS Reality URI:
 ${VLESS_LINK}
 
 Shadowrocket Local Config:
@@ -443,16 +481,24 @@ xray version
 EOF
 
   chmod 600 "${CLIENT_INFO}"
+}
 
+print_final_result() {
   echo
-  echo -e "${BLUE}================= CLIENT INFO =================${NC}"
-  cat "${CLIENT_INFO}"
+  echo -e "${BLUE}================= FINAL RESULT =================${NC}"
+  echo -e "${GREEN}Xray status:${NC} $(systemctl is-active xray 2>/dev/null || echo unknown)"
+  echo -e "${GREEN}Server IP:${NC} ${SERVER_IP}"
+  echo -e "${GREEN}Port:${NC} ${XRAY_PORT}"
+  echo -e "${GREEN}Client file path:${NC} ${CLIENT_INFO}"
+  echo -e "${GREEN}VLESS Reality URI:${NC} ${VLESS_LINK}"
   echo -e "${BLUE}================================================${NC}"
+  echo "${VLESS_LINK}"
 }
 
 start_services() {
   log "Starting Xray service..."
 
+  systemctl daemon-reload
   systemctl enable xray
   systemctl restart xray
 
@@ -460,8 +506,28 @@ start_services() {
     log "Xray is running."
   else
     journalctl -u xray -e --no-pager || true
-    error "Xray failed to start."
+    error "Xray failed to start. Troubleshoot with: journalctl -u xray -e --no-pager"
   fi
+}
+
+final_self_check() {
+  log "Running final self-check..."
+
+  if [[ "$(tr -d '[:space:]' < "${XRAY_CONFIG}")" == "{}" ]]; then
+    error "${XRAY_CONFIG} is {}. Refusing to report success."
+  fi
+
+  systemctl is-active --quiet xray || error "xray.service is not active."
+
+  if ! ss -tulpn 2>/dev/null | awk -v port="${XRAY_PORT}" '{split($5, local_addr, ":")} local_addr[length(local_addr)] == port {found=1} END {exit found ? 0 : 1}'; then
+    error "Port ${XRAY_PORT}/tcp is not listening."
+  fi
+
+  if [[ ! -s "${CLIENT_INFO}" ]]; then
+    error "${CLIENT_INFO} is missing or empty."
+  fi
+
+  log "Final self-check passed."
 }
 
 main() {
@@ -480,8 +546,10 @@ main() {
   save_state
   start_services
   write_client_info
+  final_self_check
 
   log "Deployment completed successfully."
+  print_final_result
 }
 
 main "$@"
