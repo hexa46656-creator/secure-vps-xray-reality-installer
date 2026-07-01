@@ -19,6 +19,7 @@ SHADOWROCKET_CONF_SRC="default.conf"
 SHADOWROCKET_CONF_DST="/root/shadowrocket-default.conf"
 SSHD_DROPIN="/etc/ssh/sshd_config.d/99-xray-reality-vpsguard.conf"
 
+SSH_PORT="${SSH_PORT:-}"
 XRAY_PORT="${XRAY_PORT:-8443}"
 REALITY_SERVER_NAME="${REALITY_SERVER_NAME:-speed.cloudflare.com}"
 REALITY_DEST="${REALITY_DEST:-speed.cloudflare.com:443}"
