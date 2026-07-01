@@ -79,31 +79,28 @@ print_final_summary() {
     return 0
   fi
 
-  local ssh_command ssh_password uuid vless_link
+  local ssh_command uuid vless_link
   ssh_command="$(extract_value "SSH Login Command:")"
-  ssh_password="$(extract_value "SSH Login Password:")"
   uuid="$(extract_value "UUID:")"
   vless_link="$(extract_value "VLESS Link:")"
 
   echo
   echo -e "${BLUE}${BOLD}============================================================${NC}"
-  echo -e "${BLUE}${BOLD}                 安装完成：请保存以下 4 项                  ${NC}"
+  echo -e "${BLUE}${BOLD}                 安装完成：请保存以下 3 项                  ${NC}"
   echo -e "${BLUE}${BOLD}============================================================${NC}"
   echo
-  echo -e "${YELLOW}${BOLD}1、SSH Login Command（以后在终端用这条命令登录 VPS）${NC}"
-  echo -e "${GREEN}${BOLD}${ssh_command:-未找到}${NC}"
+  echo -e "${YELLOW}${BOLD}1、SSH Login Command（以后在终端用这条命令登录 VPS，需要本地 SSH 私钥）${NC}"
+  echo -e "${GREEN}${BOLD}${ssh_command:-未找到，请查看 ${CLIENT_INFO}}${NC}"
   echo
-  echo -e "${YELLOW}${BOLD}2、SSH Login Password（SSH 登录密码；终端输入时不会显示字符）${NC}"
-  echo -e "${GREEN}${BOLD}${ssh_password:-未找到}${NC}"
+  echo -e "${YELLOW}${BOLD}2、UUID（VLESS 客户端 UUID，用于手动配置或核对节点）${NC}"
+  echo -e "${GREEN}${BOLD}${uuid:-未找到，请查看 ${CLIENT_INFO}}${NC}"
   echo
-  echo -e "${YELLOW}${BOLD}3、UUID（VLESS 客户端 UUID，用于手动配置或核对节点）${NC}"
-  echo -e "${GREEN}${BOLD}${uuid:-未找到}${NC}"
-  echo
-  echo -e "${YELLOW}${BOLD}4、VLESS Link（复制整行 vless:// 导入 Shadowrocket）${NC}"
-  echo -e "${GREEN}${BOLD}${vless_link:-未找到}${NC}"
+  echo -e "${YELLOW}${BOLD}3、VLESS Link（复制整行 vless:// 导入 Shadowrocket / v2rayNG）${NC}"
+  echo -e "${GREEN}${BOLD}${vless_link:-未找到，请查看 ${CLIENT_INFO}}${NC}"
   echo
   echo -e "${BLUE}${BOLD}============================================================${NC}"
-  echo -e "${YELLOW}${BOLD}中文提示：root 远程登录已禁用；以后请用上面的 SSH Login Command 管理 VPS。${NC}"
+  echo -e "${YELLOW}${BOLD}中文提示：root 远程登录和密码登录均已禁用，只能用 SSH Key 登录。${NC}"
+  echo -e "${YELLOW}${BOLD}关闭当前会话前，请先用新终端测试一次上面的 SSH Login Command。${NC}"
   echo -e "${YELLOW}${BOLD}完整信息也已保存到：${CLIENT_INFO}${NC}"
   echo -e "${BLUE}${BOLD}============================================================${NC}"
   echo

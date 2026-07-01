@@ -154,13 +154,31 @@ check_os() {
 }
 
 detect_ssh_port() {
-  SSH_PORT="$(ss -tlnp 2>/dev/null | awk '/sshd/ {print $4}' | awk -F: '{print $NF}' | head -n1 || true)"
+  local detected=""
 
-  if [[ -z "${SSH_PORT}" ]]; then
-    SSH_PORT="$(grep -Ei '^\s*Port\s+' /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null | awk '{print $NF}' | tail -n1 || true)"
+  if [[ -n "${SSH_PORT}" ]]; then
+    if ! [[ "${SSH_PORT}" =~ ^[0-9]+$ ]]; then
+      error "SSH_PORT must be numeric. Got: ${SSH_PORT}"
+    fi
+    log "Using explicitly provided SSH port: ${SSH_PORT}"
+    return
   fi
 
-  SSH_PORT="${SSH_PORT:-22}"
+  detected="$(sshd -T 2>/dev/null | awk '/^port /{print $2; exit}')"
+
+  if [[ -z "${detected}" ]]; then
+    detected="$(ss -tlnp 2>/dev/null | awk '/sshd/ {n=split($4,a,":"); print a[n]; exit}')"
+  fi
+
+  if [[ -z "${detected}" ]]; then
+    detected="$(grep -Ehi '^\s*Port\s+[0-9]+' /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null | awk '{print $NF}' | tail -n1 || true)"
+  fi
+
+  if [[ -z "${detected}" || ! "${detected}" =~ ^[0-9]+$ ]]; then
+    error "Unable to detect SSH port automatically. Set SSH_PORT=<your_port> and rerun."
+  fi
+
+  SSH_PORT="${detected}"
   log "Detected SSH port: ${SSH_PORT}"
 }
 
@@ -324,6 +342,21 @@ create_deploy_user() {
   log "Deploy user is ready: ${DEPLOY_USER}"
 }
 
+ensure_ssh_key_access() {
+  local root_keys="/root/.ssh/authorized_keys"
+  local deploy_keys="/home/${DEPLOY_USER}/.ssh/authorized_keys"
+
+  if [[ -s "${root_keys}" ]] && grep -Eq '^[[:space:]]*[^#[:space:]]' "${root_keys}"; then
+    return 0
+  fi
+
+  if [[ -s "${deploy_keys}" ]] && grep -Eq '^[[:space:]]*[^#[:space:]]' "${deploy_keys}"; then
+    return 0
+  fi
+
+  error "No usable SSH public key found for root or ${DEPLOY_USER}. Aborting before SSH password login is disabled."
+}
+
 harden_ssh_safe() {
   log "Applying VPSGuard-compatible SSH hardening..."
 
@@ -390,7 +423,6 @@ verify_ssh_listening() {
 configure_ufw() {
   log "Configuring UFW firewall..."
 
-  ufw --force reset
   ufw default deny incoming
   ufw default allow outgoing
 
@@ -784,6 +816,7 @@ main() {
   detect_ssh_port
   install_packages
   create_deploy_user
+  ensure_ssh_key_access
   harden_ssh_safe
   configure_ufw
   configure_fail2ban

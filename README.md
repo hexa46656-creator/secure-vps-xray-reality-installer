@@ -7,7 +7,7 @@ Automated Ubuntu 24.04 VPS Xray-core VLESS + REALITY + Vision deployment script 
 ## Features
 
 - VPSGuard-compatible SSH hardening
-- UFW firewall configuration for SSH and Xray Reality
+- UFW firewall configuration for SSH and Xray Reality without wiping unrelated existing rules
 - Fail2ban SSH protection
 - Xray-core installation
 - VLESS + REALITY + Vision configuration
@@ -27,10 +27,10 @@ Automated Ubuntu 24.04 VPS Xray-core VLESS + REALITY + Vision deployment script 
 
 Recommended:
 
-1. Run VPSGuard first and create/keep your secure SSH user.
+1. Run VPSGuard first and make sure at least one SSH key is already working.
 2. Run this Xray Reality installer.
 
-The default deploy user is `alex`, matching the VPSGuard default user. If `alex` already exists, this script reuses it and keeps `/home/alex/.ssh/authorized_keys` unchanged. If `DEPLOY_USER` does not exist, the script creates it.
+The installer disables root SSH login and SSH password login, so do not run it unless key-based access is already confirmed. The default deploy user is `alex`, matching the VPSGuard default user. If `alex` already exists, this script reuses it and keeps `/home/alex/.ssh/authorized_keys` unchanged. If `DEPLOY_USER` does not exist, the script creates it.
 
 ```bash
 sudo -i
@@ -85,7 +85,7 @@ By default, UFW only allows:
 - Current SSH port, usually `22/tcp`
 - Xray Reality port, default `8443/tcp`
 
-Ports `80/tcp` and `443/tcp` are not opened by default because this Reality setup does not use them. Open them manually only if another service needs HTTP/HTTPS.
+Ports `80/tcp` and `443/tcp` are not opened by default because this Reality setup does not use them. Open them manually only if another service needs HTTP/HTTPS. The installer does not wipe unrelated existing UFW rules; it only adds the SSH and Xray rules it needs.
 
 ## Useful Commands
 
@@ -141,7 +141,7 @@ This script uses a VPSGuard-compatible SSH hardening strategy:
 - Keyboard-interactive authentication is disabled.
 - Existing VPSGuard SSH keys for `alex` are preserved.
 
-Before closing your current SSH session, confirm that your VPSGuard user can log in with SSH keys.
+Before closing your current SSH session, confirm that your VPSGuard user can log in with SSH keys. If the SSH port cannot be detected automatically, set `SSH_PORT=<your_port>` explicitly before running the installer.
 
 ## Common Commands
 
@@ -189,7 +189,7 @@ MIT
 
 ### 项目简介
 
-本项目用于在 Ubuntu 24.04 VPS 上自动部署 Xray-core VLESS + REALITY + Vision，并带有 VPSGuard 兼容的 SSH 加固流程。安装完成后会输出客户端链接、订阅链接和本地保存的客户端信息。
+本项目用于在 Ubuntu 24.04 VPS 上自动部署 Xray-core VLESS + REALITY + Vision，并带有 VPSGuard 兼容的 SSH 加固流程。安装完成后会输出客户端链接和本地保存的客户端信息。
 
 ### 支持系统
 
@@ -197,6 +197,8 @@ MIT
 - 推荐先完成 VPSGuard 或其他基础加固，再运行本安装脚本
 
 ### 一键安装命令
+
+运行前请确认 VPS 上已经有可用的 SSH Key，否则脚本会在关闭密码登录前直接退出。
 
 ```bash
 sudo -i
@@ -217,7 +219,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/hexa46656-creator/secure-vps-x
 ### 安装完成后的客户端链接
 
 - 客户端信息保存到：`/root/xray-reality-client.txt`
-- 安装完成后，终端会显示原始 VLESS Reality 链接和订阅链接
+- 安装完成后，终端会显示原始 VLESS Reality 链接
 - 你可以先复制链接，再按需要导入客户端
 
 ### 二维码扫码导入
