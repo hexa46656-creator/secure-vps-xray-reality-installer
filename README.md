@@ -54,7 +54,7 @@ XRAY_PORT=8443 bash <(curl -Ls https://raw.githubusercontent.com/hexa46656-creat
 
 ## Custom REALITY SNI
 
-Default SNI is `www.microsoft.com`.
+Default SNI is `speed.cloudflare.com`.
 
 ```bash
 REALITY_SERVER_NAME=www.apple.com REALITY_DEST=www.apple.com:443 bash <(curl -Ls https://raw.githubusercontent.com/hexa46656-creator/secure-vps-xray-reality-installer/main/install.sh)
@@ -184,3 +184,80 @@ bash uninstall.sh
 ## License
 
 MIT
+
+## 中文说明
+
+### 项目简介
+
+本项目用于在 Ubuntu 24.04 VPS 上自动部署 Xray-core VLESS + REALITY + Vision，并带有 VPSGuard 兼容的 SSH 加固流程。安装完成后会输出客户端链接、订阅链接和本地保存的客户端信息。
+
+### 支持系统
+
+- Ubuntu 24.04 LTS x64
+- 推荐先完成 VPSGuard 或其他基础加固，再运行本安装脚本
+
+### 一键安装命令
+
+```bash
+sudo -i
+apt update && apt install -y curl
+bash <(curl -Ls https://raw.githubusercontent.com/hexa46656-creator/secure-vps-xray-reality-installer/main/install.sh)
+```
+
+### 默认端口
+
+- 默认 Xray 入站端口：`8443/tcp`
+
+### 默认 SNI
+
+- 默认 `REALITY_SERVER_NAME`：`speed.cloudflare.com`
+- 默认 `REALITY_DEST`：`speed.cloudflare.com:443`
+- 如果你手动指定参数，脚本会保留你的自定义值
+
+### 安装完成后的客户端链接
+
+- 客户端信息保存到：`/root/xray-reality-client.txt`
+- 安装完成后，终端会显示原始 VLESS Reality 链接和订阅链接
+- 你可以先复制链接，再按需要导入客户端
+
+### 二维码扫码导入
+
+安装完成后，脚本会在终端显示二维码，并把 PNG 文件保存到本机。
+
+- 二维码内容优先使用脚本最终生成的订阅链接
+- 如果订阅链接不可用，会回退到原始 `vless://` 链接
+- PNG 文件保存路径：`/root/secure-vps-xray-reality-qr.png`
+
+常用客户端：
+
+- Shadowrocket
+- v2rayNG
+- Hiddify
+- NekoBox
+- Clash / Clash Verge
+
+### 状态检查命令
+
+```bash
+bash status.sh
+```
+
+### 卸载命令
+
+```bash
+bash uninstall.sh
+```
+
+### 安全提示
+
+- 该脚本会禁用 root SSH 登录，并关闭密码登录
+- 请确认你的 SSH Key 可以正常登录后，再结束当前会话
+- 建议先备份 `/root/xray-reality-client.txt`
+
+### 故障排查
+
+1. 先执行 `bash status.sh` 查看 Xray、SSH 和防火墙状态
+2. 确认 `8443/tcp` 已在 VPS 防火墙和云安全组中放行
+3. 确认 `speed.cloudflare.com` 的 DNS 解析正常
+4. 如果二维码无法显示，直接复制 `/root/xray-reality-client.txt` 里的原始链接手动导入
+5. 如果安装后无法连接，先查看 `journalctl -u xray -e --no-pager`

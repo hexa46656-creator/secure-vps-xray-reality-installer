@@ -20,12 +20,13 @@ SHADOWROCKET_CONF_DST="/root/shadowrocket-default.conf"
 SSHD_DROPIN="/etc/ssh/sshd_config.d/99-xray-reality-vpsguard.conf"
 
 XRAY_PORT="${XRAY_PORT:-8443}"
-REALITY_SERVER_NAME="${REALITY_SERVER_NAME:-www.cloudflare.com}"
-REALITY_DEST="${REALITY_DEST:-www.cloudflare.com:443}"
+REALITY_SERVER_NAME="${REALITY_SERVER_NAME:-speed.cloudflare.com}"
+REALITY_DEST="${REALITY_DEST:-speed.cloudflare.com:443}"
 REALITY_DNS_STRICT="${REALITY_DNS_STRICT:-warn}"
 CLIENT_NAME="${CLIENT_NAME:-VLESS-Reality}"
 DEPLOY_USER="${DEPLOY_USER:-alex}"
 DEPLOY_USER_PASSWORD="${DEPLOY_USER_PASSWORD:-}"
+INSTALLER_CORE_DIR="${INSTALLER_CORE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../vps-installer-core" 2>/dev/null && pwd || true)}"
 
 log() {
   echo -e "${GREEN}[INFO]${NC} $1"
@@ -40,6 +41,13 @@ error() {
   exit 1
 }
 
+if [[ -z "${INSTALLER_CORE_DIR}" || ! -f "${INSTALLER_CORE_DIR}/installer_core.sh" ]]; then
+  error "Missing shared installer core. Expected vps-installer-core/installer_core.sh next to this repository or set INSTALLER_CORE_DIR."
+fi
+
+# shellcheck source=/dev/null
+source "${INSTALLER_CORE_DIR}/installer_core.sh"
+
 require_root() {
   if [[ "${EUID}" -ne 0 ]]; then
     error "Please run this script as root. Example: sudo -i"
@@ -47,24 +55,8 @@ require_root() {
 }
 
 check_os() {
-  if [[ ! -f /etc/os-release ]]; then
-    error "Cannot detect operating system."
-  fi
-
-  # shellcheck disable=SC1091
-  . /etc/os-release
-
-  if [[ "${ID:-}" != "ubuntu" ]]; then
-    error "This installer only supports Ubuntu. Detected: ${ID:-unknown}"
-  fi
-
-  if [[ "${VERSION_ID:-}" != "24.04" ]]; then
-    warn "This script is designed for Ubuntu 24.04. Detected: ${VERSION_ID:-unknown}"
-    read -rp "Continue anyway? [y/N]: " confirm
-    if [[ ! "${confirm}" =~ ^[Yy]$ ]]; then
-      exit 0
-    fi
-  fi
+  installer_core_detect_os
+  log "Detected supported OS: ${INSTALLER_OS_PRETTY_NAME}"
 }
 
 detect_ssh_port() {
@@ -135,11 +127,61 @@ check_reality_dns_health() {
 }
 
 install_packages() {
-  log "Updating system and installing dependencies..."
-  apt update
-  DEBIAN_FRONTEND=noninteractive apt upgrade -y
-  DEBIAN_FRONTEND=noninteractive apt install -y \
-    curl wget unzip jq socat ufw fail2ban ca-certificates gnupg lsb-release openssl iproute2 sudo dnsutils
+  installer_core_install_packages \
+    curl wget unzip jq socat ufw fail2ban ca-certificates gnupg lsb-release openssl iproute2 sudo dnsutils qrencode
+}
+
+print_client_qr() {
+  local client_url="${1:-}"
+  local output_file="${2:-}"
+
+  if [[ -z "${client_url}" ]]; then
+    echo "[WARN] Client URL is empty, skip QR code generation."
+    return 0
+  fi
+
+  if [[ -z "${output_file}" ]]; then
+    output_file="/root/secure-vps-xray-reality-qr.png"
+  fi
+
+  if ! command -v qrencode >/dev/null 2>&1; then
+    echo "[INFO] Installing qrencode..."
+    if command -v apt >/dev/null 2>&1; then
+      apt update >/dev/null 2>&1 || true
+      apt install -y qrencode >/dev/null 2>&1 || true
+    elif command -v apt-get >/dev/null 2>&1; then
+      apt-get update -y >/dev/null 2>&1 || true
+      apt-get install -y qrencode >/dev/null 2>&1 || true
+    fi
+  fi
+
+  if ! command -v qrencode >/dev/null 2>&1; then
+    echo "[WARN] qrencode is not available, skip QR code generation."
+    echo "[INFO] Client URL:"
+    echo "${client_url}"
+    return 0
+  fi
+
+  echo
+  echo "========== Client QR Code =========="
+  if ! qrencode -t ANSIUTF8 "${client_url}"; then
+    echo "[WARN] Failed to render QR code in terminal."
+  fi
+
+  if qrencode -o "${output_file}" "${client_url}"; then
+    chmod 600 "${output_file}"
+    echo
+    echo "[OK] QR code saved to: ${output_file}"
+  else
+    echo "[WARN] Failed to save QR code PNG."
+  fi
+
+  echo
+  echo "Mobile import:"
+  echo "1. Open Shadowrocket / v2rayNG / Hiddify / NekoBox"
+  echo "2. Tap scan QR code"
+  echo "3. Scan the QR code above"
+  echo "4. Save and test the node"
 }
 
 backup_file() {
@@ -576,6 +618,21 @@ dig ${REALITY_SERVER_NAME}
 EOF
 
   chmod 600 "${CLIENT_INFO}"
+
+  export SUBSCRIPTION_PROTOCOL="vless-reality"
+  export SUBSCRIPTION_DIR="/sub/${UUID}"
+  export SUBSCRIPTION_SERVER="${SERVER_IP}"
+  export SUBSCRIPTION_UUID="${UUID}"
+  export SUBSCRIPTION_CLIENT_NAME="${CLIENT_NAME}"
+  export SUBSCRIPTION_PUBLIC_KEY="${PUBLIC_KEY}"
+  export SUBSCRIPTION_SHORT_ID="${SHORT_ID}"
+  export SUBSCRIPTION_SNI="${REALITY_SERVER_NAME}"
+  export SUBSCRIPTION_PORT="${XRAY_PORT}"
+  export SUBSCRIPTION_FLOW="xtls-rprx-vision"
+  installer_core_subscription_protocol_defaults
+  installer_core_publish_subscription
+
+  print_client_qr "${SUBSCRIPTION_ACCESS_URL:-${VLESS_LINK:-}}" "/root/secure-vps-xray-reality-qr.png"
 }
 
 print_final_result() {
@@ -588,6 +645,7 @@ print_final_result() {
   echo -e "${GREEN}VLESS Reality URI:${NC} ${VLESS_LINK}"
   echo -e "${BLUE}================================================${NC}"
   echo "${VLESS_LINK}"
+  installer_core_print_completion_block "$(installer_core_mode_label)" "${SUBSCRIPTION_ACCESS_URL}" "Shadowrocket, v2rayNG, Clash, sing-box"
 }
 
 start_services() {
