@@ -15,6 +15,7 @@ Automated Ubuntu 24.04 VPS Xray-core VLESS + REALITY + Vision deployment script 
 - Automatic REALITY key pair generation
 - Automatic shortId generation
 - Shadowrocket / v2rayN compatible VLESS link output
+- BBR network acceleration enabled by default when supported by the kernel
 - One-command deployment
 
 ## Supported System
@@ -95,6 +96,8 @@ journalctl -u xray -e --no-pager
 ufw status verbose
 fail2ban-client status sshd
 xray version
+sysctl net.ipv4.tcp_congestion_control net.core.default_qdisc
+lsmod | grep bbr
 ```
 
 ## Project Structure
@@ -254,6 +257,7 @@ bash uninstall.sh
 ### 安全提示
 
 - 该脚本会禁用 root SSH 登录，并关闭密码登录
+- 该脚本会在内核支持时默认开启 BBR 加速
 - 请确认你的 SSH Key 可以正常登录后，再结束当前会话
 - 建议先备份 `/root/xray-reality-client.txt`
 

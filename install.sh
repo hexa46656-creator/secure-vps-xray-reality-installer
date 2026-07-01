@@ -244,6 +244,36 @@ install_packages() {
     curl wget unzip jq socat ufw fail2ban ca-certificates gnupg lsb-release openssl iproute2 sudo dnsutils qrencode
 }
 
+enable_bbr() {
+  local sysctl_file="/etc/sysctl.d/99-bbr.conf"
+  local current_cc
+  local current_qdisc
+
+  log "Enabling BBR network acceleration..."
+
+  if ! modprobe tcp_bbr >/dev/null 2>&1; then
+    warn "tcp_bbr module could not be loaded. Kernel may not support BBR; continuing."
+    return 0
+  fi
+
+  cat > "${sysctl_file}" <<'EOF'
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+EOF
+
+  sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1 || warn "Failed to apply net.core.default_qdisc=fq immediately."
+  sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1 || warn "Failed to apply net.ipv4.tcp_congestion_control=bbr immediately."
+
+  current_cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)"
+  current_qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || true)"
+
+  if [[ "${current_cc}" == "bbr" && "${current_qdisc}" == "fq" ]]; then
+    log "BBR enabled: tcp_congestion_control=bbr, default_qdisc=fq"
+  else
+    warn "BBR was configured but is not fully active yet. Current: tcp_congestion_control=${current_cc:-unknown}, default_qdisc=${current_qdisc:-unknown}"
+  fi
+}
+
 print_client_qr() {
   local client_url="${1:-}"
   local output_file="${2:-}"
@@ -838,6 +868,7 @@ main() {
   check_os
   detect_ssh_port
   install_packages
+  enable_bbr
   create_deploy_user
   configure_passwordless_sudo
   ensure_ssh_key_access
