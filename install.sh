@@ -41,12 +41,106 @@ error() {
   exit 1
 }
 
-if [[ -z "${INSTALLER_CORE_DIR}" || ! -f "${INSTALLER_CORE_DIR}/installer_core.sh" ]]; then
-  error "Missing shared installer core. Expected vps-installer-core/installer_core.sh next to this repository or set INSTALLER_CORE_DIR."
+if [[ -n "${INSTALLER_CORE_DIR}" && -f "${INSTALLER_CORE_DIR}/installer_core.sh" ]]; then
+  # shellcheck source=/dev/null
+  source "${INSTALLER_CORE_DIR}/installer_core.sh"
 fi
 
-# shellcheck source=/dev/null
-source "${INSTALLER_CORE_DIR}/installer_core.sh"
+if ! declare -F installer_core_detect_os >/dev/null 2>&1; then
+  installer_core_detect_os() {
+    local os_id
+    local os_name
+    local os_pretty_name
+    local init_comm
+
+    if [[ ! -r /etc/os-release ]]; then
+      error "Unable to read /etc/os-release."
+    fi
+
+    # shellcheck disable=SC1091
+    . /etc/os-release
+
+    os_id="${ID:-unknown}"
+    os_name="${NAME:-${ID:-unknown}}"
+    os_pretty_name="${PRETTY_NAME:-${os_name}}"
+
+    case "${os_id}" in
+      ubuntu|debian) ;;
+      *) error "Unsupported OS: ${os_pretty_name}. This installer only supports Ubuntu or Debian." ;;
+    esac
+
+    init_comm="$(ps -p 1 -o comm= 2>/dev/null | tr -d '[:space:]' || true)"
+    if [[ "${init_comm}" != "systemd" && ! -d /run/systemd/system ]]; then
+      error "systemd is required but not available on this system."
+    fi
+
+    # shellcheck disable=SC2034
+    INSTALLER_OS_ID="${os_id}"
+    # shellcheck disable=SC2034
+    INSTALLER_OS_NAME="${os_name}"
+    # shellcheck disable=SC2034
+    INSTALLER_OS_VERSION_ID="${VERSION_ID:-unknown}"
+    # shellcheck disable=SC2034
+    INSTALLER_OS_PRETTY_NAME="${os_pretty_name}"
+  }
+fi
+
+if ! declare -F installer_core_install_packages >/dev/null 2>&1; then
+  installer_core_install_packages() {
+    local packages=("$@")
+
+    if [[ "${#packages[@]}" -eq 0 ]]; then
+      return 0
+    fi
+
+    export DEBIAN_FRONTEND=noninteractive
+
+    if command -v apt-get >/dev/null 2>&1; then
+      apt-get update
+      apt-get install -y "${packages[@]}"
+    else
+      apt update
+      apt install -y "${packages[@]}"
+    fi
+  }
+fi
+
+if ! declare -F installer_core_subscription_protocol_defaults >/dev/null 2>&1; then
+  installer_core_subscription_protocol_defaults() {
+    SUBSCRIPTION_ACCESS_URL="${SUBSCRIPTION_ACCESS_URL:-${VLESS_LINK:-}}"
+  }
+fi
+
+if ! declare -F installer_core_publish_subscription >/dev/null 2>&1; then
+  installer_core_publish_subscription() {
+    SUBSCRIPTION_ACCESS_URL="${SUBSCRIPTION_ACCESS_URL:-${VLESS_LINK:-}}"
+  }
+fi
+
+if ! declare -F installer_core_mode_label >/dev/null 2>&1; then
+  installer_core_mode_label() {
+    printf '%s\n' "standalone"
+  }
+fi
+
+if ! declare -F installer_core_print_completion_block >/dev/null 2>&1; then
+  installer_core_print_completion_block() {
+    local mode="${1:-standalone}"
+    local access_url="${2:-${SUBSCRIPTION_ACCESS_URL:-${VLESS_LINK:-${HY2_URI:-${TROJAN_URI:-}}}}}"
+    local clients="${3:-}"
+
+    echo
+    echo "========== Completion =========="
+    echo "[MODE] ${mode}"
+    if [[ -n "${access_url}" ]]; then
+      echo "[LINK] ${access_url}"
+    fi
+    if [[ -n "${clients}" ]]; then
+      echo "[CLIENTS] ${clients}"
+    fi
+    echo "================================"
+  }
+fi
 
 require_root() {
   if [[ "${EUID}" -ne 0 ]]; then
@@ -150,7 +244,7 @@ print_client_qr() {
       apt update >/dev/null 2>&1 || true
       apt install -y qrencode >/dev/null 2>&1 || true
     elif command -v apt-get >/dev/null 2>&1; then
-      apt-get update -y >/dev/null 2>&1 || true
+      apt-get update >/dev/null 2>&1 || true
       apt-get install -y qrencode >/dev/null 2>&1 || true
     fi
   fi
@@ -631,6 +725,7 @@ EOF
   export SUBSCRIPTION_FLOW="xtls-rprx-vision"
   installer_core_subscription_protocol_defaults
   installer_core_publish_subscription
+  : "${SUBSCRIPTION_ACCESS_URL:=${VLESS_LINK:-}}"
 
   print_client_qr "${SUBSCRIPTION_ACCESS_URL:-${VLESS_LINK:-}}" "/root/secure-vps-xray-reality-qr.png"
 }
