@@ -15,6 +15,8 @@ NC="\033[0m"
 XRAY_CONFIG="/usr/local/etc/xray/config.json"
 CLIENT_INFO="/root/xray-reality-client.txt"
 INSTALLER_STATE="/etc/xray-reality-installer.env"
+NETWORK_SYSCTL_FILE="/etc/sysctl.d/99-secure-vps-xray-reality-tuning.conf"
+UFW_MSS_CLAMP_MARKER="vpsguard-secure-vps-xray-reality-mss-clamp"
 SHADOWROCKET_CONF_SRC="default.conf"
 SHADOWROCKET_CONF_DST="/root/shadowrocket-default.conf"
 SSHD_DROPIN="/etc/ssh/sshd_config.d/99-xray-reality-vpsguard.conf"
@@ -244,8 +246,22 @@ install_packages() {
     curl wget unzip jq socat ufw fail2ban ca-certificates gnupg lsb-release openssl iproute2 sudo dnsutils qrencode
 }
 
+detect_path_mtu() {
+  local mtu
+
+  mtu="$(ip route get 1.1.1.1 2>/dev/null | awk 'match($0, /mtu ([0-9]+)/, m) {print m[1]; exit}')"
+
+  if [[ -n "${mtu}" ]]; then
+    log "Detected path MTU reference: ${mtu}"
+    if [[ "${mtu}" -lt 1350 || "${mtu}" -gt 1450 ]]; then
+      warn "Path MTU reference is outside the 1350-1450 target range for Xray Reality: ${mtu}"
+    fi
+  else
+    warn "Unable to detect path MTU reference with ip route get 1.1.1.1."
+  fi
+}
+
 enable_bbr() {
-  local sysctl_file="/etc/sysctl.d/99-bbr.conf"
   local current_cc
   local current_qdisc
 
@@ -253,16 +269,20 @@ enable_bbr() {
 
   if ! modprobe tcp_bbr >/dev/null 2>&1; then
     warn "tcp_bbr module could not be loaded. Kernel may not support BBR; continuing."
-    return 0
   fi
 
-  cat > "${sysctl_file}" <<'EOF'
+  cat > "${NETWORK_SYSCTL_FILE}" <<'EOF'
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
+net.ipv4.tcp_fastopen=3
+net.ipv4.tcp_mtu_probing=1
 EOF
 
   sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1 || warn "Failed to apply net.core.default_qdisc=fq immediately."
   sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1 || warn "Failed to apply net.ipv4.tcp_congestion_control=bbr immediately."
+  sysctl -w net.ipv4.tcp_fastopen=3 >/dev/null 2>&1 || warn "Failed to apply net.ipv4.tcp_fastopen=3 immediately."
+  sysctl -w net.ipv4.tcp_mtu_probing=1 >/dev/null 2>&1 || warn "Failed to apply net.ipv4.tcp_mtu_probing=1 immediately."
+  detect_path_mtu
 
   current_cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)"
   current_qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || true)"
@@ -271,6 +291,40 @@ EOF
     log "BBR enabled: tcp_congestion_control=bbr, default_qdisc=fq"
   else
     warn "BBR was configured but is not fully active yet. Current: tcp_congestion_control=${current_cc:-unknown}, default_qdisc=${current_qdisc:-unknown}"
+  fi
+}
+
+configure_tcp_mss_clamp() {
+  local before_rules="/etc/ufw/before.rules"
+  local before6_rules="/etc/ufw/before6.rules"
+  local marker="# ${UFW_MSS_CLAMP_MARKER}"
+  local tmp_file
+
+  for rules_file in "${before_rules}" "${before6_rules}"; do
+    [[ -f "${rules_file}" ]] || continue
+
+    if grep -Fq "${marker}" "${rules_file}"; then
+      log "UFW MSS clamp rule already present in ${rules_file}"
+      continue
+    fi
+
+    log "Adding UFW MSS clamp rule to ${rules_file}"
+    tmp_file="$(mktemp)"
+    {
+      printf '%s\n' "${marker}"
+      printf '*mangle\n'
+      printf ':POSTROUTING ACCEPT [0:0]\n'
+      printf '-A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu\n'
+      printf 'COMMIT\n'
+      printf '%s\n' "${marker}"
+      cat "${rules_file}"
+    } > "${tmp_file}"
+    cat "${tmp_file}" > "${rules_file}"
+    rm -f "${tmp_file}"
+  done
+
+  if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then
+    ufw reload >/dev/null || true
   fi
 }
 
@@ -874,6 +928,7 @@ main() {
   ensure_ssh_key_access
   harden_ssh_safe
   configure_ufw
+  configure_tcp_mss_clamp
   configure_fail2ban
   install_xray
   check_reality_dns_health
