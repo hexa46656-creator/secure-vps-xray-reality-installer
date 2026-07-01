@@ -30,7 +30,7 @@ Recommended:
 1. Run VPSGuard first and make sure at least one SSH key is already working.
 2. Run this Xray Reality installer.
 
-The installer disables root SSH login and SSH password login, so do not run it unless key-based access is already confirmed. The default deploy user is `alex`, matching the VPSGuard default user. If `alex` already exists, this script reuses it and keeps `/home/alex/.ssh/authorized_keys` unchanged. If `DEPLOY_USER` does not exist, the script creates it.
+The installer disables root SSH login and SSH password login, so do not run it unless key-based access is already confirmed. The default deploy user is `alex`, matching the VPSGuard default user. If `alex` already exists, this script reuses it and keeps `/home/alex/.ssh/authorized_keys` unchanged. If `DEPLOY_USER` does not exist, the script creates it. The deploy user is configured with passwordless `sudo -i` for ongoing server management.
 
 ```bash
 sudo -i
@@ -140,8 +140,9 @@ This script uses a VPSGuard-compatible SSH hardening strategy:
 - Password authentication is disabled.
 - Keyboard-interactive authentication is disabled.
 - Existing VPSGuard SSH keys for `alex` are preserved.
+- The deploy user can run `sudo -i` without a password.
 
-Before closing your current SSH session, confirm that your VPSGuard user can log in with SSH keys. If the SSH port cannot be detected automatically, set `SSH_PORT=<your_port>` explicitly before running the installer.
+Before closing your current SSH session, confirm that your VPSGuard user can log in with SSH keys and can run `sudo -i` without a password. If the SSH port cannot be detected automatically, set `SSH_PORT=<your_port>` explicitly before running the installer.
 
 ## Common Commands
 

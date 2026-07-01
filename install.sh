@@ -343,6 +343,28 @@ create_deploy_user() {
   log "Deploy user is ready: ${DEPLOY_USER}"
 }
 
+configure_passwordless_sudo() {
+  local sudoers_file="/etc/sudoers.d/91-${DEPLOY_USER}-xray-reality"
+
+  log "Configuring passwordless sudo for ${DEPLOY_USER}..."
+
+  cat > "${sudoers_file}" <<EOF
+${DEPLOY_USER} ALL=(ALL) NOPASSWD: ALL
+EOF
+
+  chmod 440 "${sudoers_file}"
+
+  if ! visudo -cf "${sudoers_file}" >/dev/null; then
+    error "Sudoers validation failed: ${sudoers_file}"
+  fi
+
+  if ! sudo -u "${DEPLOY_USER}" sudo -n -i true >/dev/null 2>&1; then
+    error "${DEPLOY_USER} cannot run sudo -i without a password."
+  fi
+
+  log "Passwordless sudo is ready for ${DEPLOY_USER}."
+}
+
 ensure_ssh_key_access() {
   local root_keys="/root/.ssh/authorized_keys"
   local deploy_keys="/home/${DEPLOY_USER}/.ssh/authorized_keys"
@@ -817,6 +839,7 @@ main() {
   detect_ssh_port
   install_packages
   create_deploy_user
+  configure_passwordless_sudo
   ensure_ssh_key_access
   harden_ssh_safe
   configure_ufw
