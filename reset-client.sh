@@ -11,6 +11,7 @@ XRAY_CONFIG="/usr/local/etc/xray/config.json"
 CLIENT_INFO="/root/xray-reality-client.txt"
 INSTALLER_STATE="/etc/xray-reality-installer.env"
 SHADOWROCKET_CONF_DST="/root/shadowrocket-default.conf"
+CONFIG_BACKUP=""
 
 log() {
   echo -e "${GREEN}[INFO]${NC} $1"
@@ -38,18 +39,20 @@ require_tools() {
 }
 
 load_state() {
-  if [[ -f "${INSTALLER_STATE}" ]]; then
-    # shellcheck disable=SC1090
-    source "${INSTALLER_STATE}"
-  fi
+  [[ -f "${INSTALLER_STATE}" ]] || error "Installer state not found: ${INSTALLER_STATE}. Refusing to guess live deployment values."
+
+  # shellcheck disable=SC1090
+  source "${INSTALLER_STATE}"
 
   XRAY_PORT="${XRAY_PORT:-8443}"
-  REALITY_SERVER_NAME="${REALITY_SERVER_NAME:-www.microsoft.com}"
-  REALITY_DEST="${REALITY_DEST:-www.microsoft.com:443}"
-  CLIENT_NAME="${CLIENT_NAME:-Xray-Reality}"
-  DEPLOY_USER="${DEPLOY_USER:-vpn}"
+  REALITY_SERVER_NAME="${REALITY_SERVER_NAME:-speed.cloudflare.com}"
+  REALITY_DEST="${REALITY_DEST:-speed.cloudflare.com:443}"
+  CLIENT_NAME="${CLIENT_NAME:-VLESS-Reality}"
+  DEPLOY_USER="${DEPLOY_USER:-alex}"
   SERVER_IP="${SERVER_IP:-}"
   SHADOWROCKET_CONF_DST="${SHADOWROCKET_CONF_DST:-/root/shadowrocket-default.conf}"
+
+  [[ "${XRAY_PORT}" =~ ^[0-9]+$ ]] || error "Invalid XRAY_PORT in ${INSTALLER_STATE}: ${XRAY_PORT}"
 }
 
 generate_values() {
@@ -105,9 +108,10 @@ update_config() {
   tmp="$(mktemp)"
 
   cp -a "${XRAY_CONFIG}" "${backup}"
+  CONFIG_BACKUP="${backup}"
   log "Backed up config to: ${backup}"
 
-  jq \
+  if ! jq \
     --arg uuid "${UUID}" \
     --arg private_key "${PRIVATE_KEY}" \
     --arg short_id "${SHORT_ID}" \
@@ -115,7 +119,10 @@ update_config() {
      | .inbounds[0].settings.clients[0].flow = "xtls-rprx-vision"
      | .inbounds[0].streamSettings.realitySettings.privateKey = $private_key
      | .inbounds[0].streamSettings.realitySettings.shortIds = [$short_id]' \
-    "${XRAY_CONFIG}" > "${tmp}"
+    "${XRAY_CONFIG}" > "${tmp}"; then
+    rm -f "${tmp}"
+    error "Failed to update Xray config JSON."
+  fi
 
   mv "${tmp}" "${XRAY_CONFIG}"
 
@@ -141,6 +148,10 @@ EOF
 }
 
 write_client_info() {
+  if [[ -f "${CLIENT_INFO}" ]]; then
+    cp -a "${CLIENT_INFO}" "${CLIENT_INFO}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+
   local encoded_name
   encoded_name="$(echo "${CLIENT_NAME}" | sed 's/ /%20/g')"
 
@@ -225,6 +236,11 @@ restart_xray() {
     log "Xray is running with the new client config."
   else
     journalctl -u xray -e --no-pager || true
+    if [[ -n "${CONFIG_BACKUP}" && -f "${CONFIG_BACKUP}" ]]; then
+      warn "Restoring previous Xray config from backup: ${CONFIG_BACKUP}"
+      cp -a "${CONFIG_BACKUP}" "${XRAY_CONFIG}"
+      systemctl restart xray || true
+    fi
     error "Xray failed to start after reset."
   fi
 }

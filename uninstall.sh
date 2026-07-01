@@ -36,7 +36,22 @@ confirm() {
   [[ "${ans}" =~ ^[Yy]$ ]]
 }
 
+load_installer_state() {
+  XRAY_PORT=""
+  if [[ -f "${INSTALLER_STATE}" ]]; then
+    # shellcheck disable=SC1090
+    source "${INSTALLER_STATE}"
+  fi
+  XRAY_PORT="${XRAY_PORT:-8443}"
+
+  if ! [[ "${XRAY_PORT}" =~ ^[0-9]+$ ]]; then
+    warn "Invalid XRAY_PORT '${XRAY_PORT}' in installer state. Falling back to 8443."
+    XRAY_PORT=8443
+  fi
+}
+
 require_root
+load_installer_state
 
 echo "This will uninstall Xray-core and remove Xray configuration files."
 echo "It will NOT modify SSH, UFW, or Fail2ban settings by default."
@@ -52,7 +67,13 @@ systemctl stop xray 2>/dev/null || true
 systemctl disable xray 2>/dev/null || true
 
 log "Running official Xray remove command if available..."
-bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove || true
+TMP_INSTALLER="$(mktemp)"
+if curl -fsSL -o "${TMP_INSTALLER}" "https://github.com/XTLS/Xray-install/raw/main/install-release.sh"; then
+  bash "${TMP_INSTALLER}" remove || warn "Official Xray remove command failed. Continuing with manual cleanup."
+else
+  warn "Failed to download official Xray installer for removal. Continuing with manual cleanup."
+fi
+rm -f "${TMP_INSTALLER}"
 
 if [[ -d "${XRAY_CONFIG_DIR}" ]]; then
   BACKUP="/root/xray-config-backup-$(date +%Y%m%d%H%M%S).tar.gz"
@@ -78,14 +99,12 @@ if [[ -f "${CLIENT_INFO}" ]]; then
   fi
 fi
 
-if confirm "Remove Xray firewall rule for the previously configured port if known"; then
-  if [[ -f "${INSTALLER_STATE}" ]]; then
-    # Normally removed above, but keep fallback logic.
-    # shellcheck disable=SC1090
-    source "${INSTALLER_STATE}"
+if confirm "Remove Xray firewall rule for port ${XRAY_PORT}/tcp"; then
+  if command -v ufw >/dev/null 2>&1; then
+    ufw delete allow "${XRAY_PORT}/tcp" 2>/dev/null || true
+  else
+    warn "ufw command not found. Skipping firewall cleanup."
   fi
-  XRAY_PORT="${XRAY_PORT:-8443}"
-  ufw delete allow "${XRAY_PORT}/tcp" 2>/dev/null || true
   log "Attempted to remove UFW rule for port ${XRAY_PORT}/tcp."
 fi
 
